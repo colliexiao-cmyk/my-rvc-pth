@@ -3,6 +3,8 @@ import sys
 import urllib.parse
 from argparse import Namespace
 from cog import BasePredictor, Input, Path as CogPath
+import hashlib
+import requests
 
 sys.path.insert(0, os.path.abspath("src"))
 
@@ -33,6 +35,16 @@ class Predictor(BasePredictor):
         ),
         custom_rvc_model_download_url: str = Input(
             description="URL to download a custom RVC model. If provided, the model will be downloaded (if it doesn't already exist) and used for prediction, regardless of the 'rvc_model' value.",
+            default=None,
+        ),
+        # 新增 1：直接传 pth
+        pth_model_download_url: str = Input(
+            description="Direct URL to a .pth file. If provided, it takes priority over zip URL.",
+            default=None,
+        ),
+        # 新增 2：可选 index
+        index_file_download_url: str = Input(
+            description="Optional direct URL to a .index file paired with pth.",
             default=None,
         ),
         pitch_change: float = Input(
@@ -81,7 +93,40 @@ class Predictor(BasePredictor):
         """
         Runs a single prediction on the model.
         """
-        if custom_rvc_model_download_url:
+        if pth_model_download_url:
+            def _download_to(url: str, dst: str):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with requests.get(url, stream=True, timeout=60) as r:
+                    r.raise_for_status()
+                    with open(dst, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                f.write(chunk)
+            # 用 URL 做稳定目录名，避免重复下载
+            key_src = pth_model_download_url + "|" + (index_file_download_url or "")
+            model_key = hashlib.sha1(key_src.encode("utf-8")).hexdigest()[:16]
+            rvc_dirname = f"custom_{model_key}"
+            model_dir = os.path.join(m.rvc_models_dir, rvc_dirname)
+            os.makedirs(model_dir, exist_ok=True)
+            # pth 文件名
+            pth_name = urllib.parse.unquote(pth_model_download_url.split("/")[-1]).split("?")[0]
+            if not pth_name.endswith(".pth"):
+                pth_name = "model.pth"
+            pth_path = os.path.join(model_dir, pth_name)
+            if not os.path.exists(pth_path):
+                print(f"[+] Downloading pth -> {pth_path}")
+                _download_to(pth_model_download_url, pth_path)
+            # 可选 index
+            if index_file_download_url:
+                index_name = urllib.parse.unquote(index_file_download_url.split("/")[-1]).split("?")[0]
+                if not index_name.endswith(".index"):
+                    index_name = "model.index"
+                index_path = os.path.join(model_dir, index_name)
+                if not os.path.exists(index_path):
+                    print(f"[+] Downloading index -> {index_path}")
+                    _download_to(index_file_download_url, index_path)
+            rvc_model = rvc_dirname
+        elif custom_rvc_model_download_url:
             custom_rvc_model_download_name = urllib.parse.unquote(
                 custom_rvc_model_download_url.split("/")[-1]
             )
